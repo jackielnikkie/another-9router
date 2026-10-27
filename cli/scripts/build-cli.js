@@ -171,7 +171,10 @@ function buildCliPackage() {
   // Step 1: Build app with Next.js (workspace tracing root → traced node_modules in standalone).
   console.log("1️⃣  Building Next.js app...");
   try {
-    execSync("npm run build", {
+    // Turbopack instead of webpack: the webpack path takes 18+ min on modest
+    // hardware and thrashes 8-12 GB heaps; turbopack finishes the same app in
+    // well under a minute.
+    execSync("npx next build", {
       stdio: "inherit",
       cwd: appDir,
       env: {
