@@ -21,6 +21,7 @@ const EXCLUDE_PATTERNS = [
   ".env.local",
   ".env.*.local",
   "*.log",          // Log files
+  "*.tgz",          // Packed bundles from earlier runs (hundreds of MB)
   "tmp",            // Temp files
   ".DS_Store",      // macOS files
 ];
@@ -168,8 +169,17 @@ function buildCliPackage() {
     console.log(`✅ Version already synced: ${cliPkg.version}\n`);
   }
 
-  // Step 1: Build app with Next.js (workspace tracing root → traced node_modules in standalone).
-  console.log("1️⃣  Building Next.js app...");
+  // Step 1: Clean the previous bundle BEFORE building. `next build` traces the
+  // workspace, so a bundle left in place is traced back into the new standalone
+  // output (app/cli/app/cli/app/...), doubling the package size on every run.
+  console.log("1️⃣  Cleaning old app/cli/app...");
+  if (fs.existsSync(cliAppDir)) {
+    fs.rmSync(cliAppDir, { recursive: true, force: true });
+  }
+  console.log("✅ Cleaned\n");
+
+  // Step 2: Build app with Next.js (workspace tracing root → traced node_modules in standalone).
+  console.log("2️⃣  Building Next.js app...");
   try {
     // Turbopack instead of webpack: the webpack path takes 18+ min on modest
     // hardware and thrashes 8-12 GB heaps; turbopack finishes the same app in
@@ -192,13 +202,6 @@ function buildCliPackage() {
     console.error("❌ Next.js build failed");
     process.exit(1);
   }
-
-  // Step 2: Clean old app/cli/app if exists
-  console.log("2️⃣  Cleaning old app/cli/app...");
-  if (fs.existsSync(cliAppDir)) {
-    fs.rmSync(cliAppDir, { recursive: true, force: true });
-  }
-  console.log("✅ Cleaned\n");
 
   // Step 3: Copy Next.js standalone build to app/cli/app.
   // Newer Next.js standalone output writes server.js/package.json plus .next/, src/, and
