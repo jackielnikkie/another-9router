@@ -21,6 +21,7 @@ import {
 import { deriveSessionId, toNumericSessionId } from "../../utils/sessionManager.js";
 import { ROLE, GEMINI_ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import { isGemini4Model } from "../../providers/capabilities.js";
+import { createToolCallIdUniquifier } from "../concerns/toolCallIdUniquifier.js";
 
 // Sanitize function names for Gemini API.
 // Gemini requires: starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 chars.
@@ -35,42 +36,6 @@ function sanitizeGeminiFunctionName(name) {
   }
   // Truncate to 64 chars
   return sanitized.substring(0, 64);
-}
-
-/**
- * Rewrites duplicate tool_call_ids so every emitted functionCall id is unique.
- *
- * Gemini validates functionCall id uniqueness across the WHOLE history and
- * answers 400 INVALID_ARGUMENT otherwise, but an OpenAI tool_call_id is only
- * unique within its own assistant turn — a long agent session can replay the
- * same id in a later turn (#4532).
- *
- * Uniqueness is per OCCURRENCE, not per id: two different calls that share an id
- * must end up with different emitted ids, so the mapping is consumed in
- * document order rather than memoized by id. Each call site calls next() once
- * per emitted functionCall, and keeps the returned value so the matching
- * functionResponse reuses it.
- *
- * Ids that were already unique are passed through untouched, so a valid
- * conversation is byte-identical to before.
- */
-function createToolCallIdUniquifier() {
-  const used = new Set();
-  return {
-    next(id) {
-      if (!id) return id;
-      if (!used.has(id)) {
-        used.add(id);
-        return id;
-      }
-      let n = 2;
-      let candidate = `${id}-${n}`;
-      // An id may already end in "-2"; keep counting rather than collide again.
-      while (used.has(candidate)) candidate = `${id}-${n++}`;
-      used.add(candidate);
-      return candidate;
-    },
-  };
 }
 
 // Core: Convert OpenAI request to Gemini format (base for all variants)

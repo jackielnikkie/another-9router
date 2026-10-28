@@ -13,8 +13,12 @@ import {
   coerceResponsesOutput,
 } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import { createToolCallIdUniquifier } from "../concerns/toolCallIdUniquifier.js";
 
 const MAX_TOOL_NAME_LEN = 128;
+// Name for a synthetic function_call emitted to answer an output whose owning
+// call is missing/duplicated/misordered and whose name cannot be recovered.
+const ORPHAN_TOOL_NAME = "tool";
 
 /**
  * Convert OpenAI Responses API request to OpenAI Chat Completions format
@@ -337,6 +341,14 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     stream: true,
     store: false
   };
+  // Dedup call_ids across the whole history: a replayed tool_call_id would emit
+  // duplicate function_call/function_call_output pairs, which strict Responses
+  // backends reject. take()/match() are called in document order so a duplicated
+  // pair gets the same rewritten id and the pairing survives.
+  const uniqueCallId = createToolCallIdUniquifier();
+  // Emitted call id -> tool name, so an output with no pending call can still be
+  // answered by a synthetic function_call carrying the real tool name.
+  const callIdNames = new Map();
 
   // Extract system message as instructions
   let hasSystemMessage = false;
@@ -401,9 +413,11 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
         // Skip nameless calls — strict Responses upstreams reject them (#444)
         const name = typeof tc.function?.name === "string" ? tc.function.name.trim() : "";
         if (!name) continue;
+        const callId = uniqueCallId.take(clampResponsesCallId(tc.id));
+        callIdNames.set(callId, name.slice(0, MAX_TOOL_NAME_LEN));
         result.input.push({
           type: RESPONSES_ITEM.FUNCTION_CALL,
-          call_id: clampResponsesCallId(tc.id),
+          call_id: callId,
           name: name.slice(0, MAX_TOOL_NAME_LEN),
           arguments: coerceResponsesArguments(tc.function?.arguments)
         });
@@ -412,9 +426,28 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
 
     // Convert tool results - output must be a string for Responses API
     if (msg.role === ROLE.TOOL) {
+      const rawId = clampResponsesCallId(msg.tool_call_id);
+      let callId = uniqueCallId.match(rawId);
+      // No call owes this output (orphan result, duplicate result for one call,
+      // or output ordered before its call): emit a synthetic function_call so the
+      // output still answers exactly one call rather than dangling. next() does
+      // NOT enqueue an owed slot — this call is answered by the output below, and
+      // a leftover slot would be consumed by a later output for the same id.
+      if (callId === null) {
+        callId = uniqueCallId.next(rawId);
+        // Names are keyed by EMITTED id; take() may have rewritten rawId (id-2),
+        // so look up the rewritten id first and fall back to the raw one.
+        const name = callIdNames.get(callId) || callIdNames.get(rawId) || ORPHAN_TOOL_NAME;
+        result.input.push({
+          type: RESPONSES_ITEM.FUNCTION_CALL,
+          call_id: callId,
+          name: name.slice(0, MAX_TOOL_NAME_LEN),
+          arguments: coerceResponsesArguments("{}")
+        });
+      }
       result.input.push({
         type: RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
-        call_id: clampResponsesCallId(msg.tool_call_id),
+        call_id: callId,
         output: coerceResponsesOutput(msg.content)
       });
     }
