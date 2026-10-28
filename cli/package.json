@@ -1,6 +1,6 @@
 {
   "name": "another-9router",
-  "version": "0.5.105",
+  "version": "0.1.0",
   "description": "Another 9Router CLI - Start and manage Another 9Router server",
   "bin": {
     "another-9router": "./cli.js"
